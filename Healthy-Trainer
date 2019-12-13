@@ -1,0 +1,666 @@
+
+/*
+
+   Code to detect pulses from the PulseSensor,
+
+   using an interrupt service routine.
+
+ 
+
+   Here is a link to the tutorial\
+
+   https://pulsesensor.com/pages/getting-advanced
+
+ 
+
+   Copyright World Famous Electronics LLC - see LICENSE
+
+   Contributors:
+
+     Joel Murphy, https://pulsesensor.com
+
+     Yury Gitman, https://pulsesensor.com
+
+     Bradford Needham, @bneedhamia, https://bluepapertech.com
+
+ 
+
+   Licensed under the MIT License, a copy of which
+
+   should have been included with this software.
+
+.
+
+   This software is not intended for medical use.
+
+*/
+
+ 
+
+/*
+
+   Every Sketch that uses the PulseSensor Playground must
+
+   define USE_ARDUINO_INTERRUPTS before including PulseSensorPlayground.h.
+
+   Here, #define USE_ARDUINO_INTERRUPTS true tells the library to use
+
+   interrupts to automatically read and process PulseSensor data.
+
+ 
+
+   See ProcessEverySample.ino for an example of not using interrupts.
+
+*/
+
+#define USE_ARDUINO_INTERRUPTS true
+
+#include <PulseSensorPlayground.h>
+
+#include <LiquidCrystal_I2C.h>
+
+#include <SPI.h>
+
+#include <MFRC522.h>
+
+#include <Wire.h>
+
+/*
+
+   The format of our output.
+
+ 
+
+   Set this to PROCESSING_VISUALIZER if you're going to run
+
+    the Processing Visualizer Sketch.
+
+    See https://github.com/WorldFamousElectronics/PulseSensor_Amped_Processing_Visualizer
+
+ 
+
+   Set this to SERIAL_PLOTTER if you're going to run
+
+    the Arduino IDE's Serial Plotter.
+
+*/
+
+ 
+
+#define RST_PIN   9                            // reset핀은 9번으로 설정
+
+#define SS_PIN    10                           // SS핀은 10번으로 설정
+
+ 
+
+#define PROCESSING_VISUALIZER       1
+
+#define SERIAL_PLOTTER              2                                            
+
+#define USE_ARDUINO_INTERRUPTS    true
+
+ 
+
+const int OUTPUT_TYPE = SERIAL_PLOTTER;
+
+ 
+
+LiquidCrystal_I2C lcd(0x27,16,2);  // set the LCD address to 0x20 for a 16 chars and 2 line display
+
+ 
+
+int pulsePin = 3;                                
+
+int fadeRate = 0;
+
+int seconds = 10;
+
+volatile int BPM;                   
+
+volatile int Signal;                
+
+volatile int IBI = 600;             
+
+volatile boolean Pulse = false;     
+
+volatile boolean QS = false;
+
+ 
+
+byte samplesUntilReport;
+
+ 
+
+int BLUE_ID;
+
+int WHITE_ID;
+
+int N = 4;
+
+char R, C, W, Y;
+
+char EXERCISE_NUM[] = {'R', 'C', 'W', 'Y'};
+
+const size_t n = sizeof(EXERCISE_NUM) / sizeof(EXERCISE_NUM[0]);
+
+ 
+
+const int PULSE_SENSOR_COUNT = 2;
+
+const int PULSE_INPUT = A0;
+
+const int PULSE_BLINK = 4;
+
+const int PULSE_FADE = 5;
+
+const int THRESHOLD = 550;
+
+const byte SAMPLES_PER_SERIAL_SAMPLE = 10;
+
+ 
+
+PulseSensorPlayground pulseSensor;
+
+ 
+
+MFRC522 mfrc(SS_PIN, RST_PIN);                 // MFR522를 이용하기 위해 mfrc객체를 생성해 줍니다.
+
+ 
+
+/*
+
+   Pinout:
+
+     PULSE_INPUT = Analog Input. Connected to the pulse sensor
+
+      purple (signal) wire.
+
+     PULSE_BLINK = digital Output. Connected to an LED (and 220 ohm resistor)
+
+      that will flash on each detected pulse.
+
+     PULSE_FADE = digital Output. PWM pin onnected to an LED (and resistor)
+
+      that will smoothly fade with each pulse.
+
+      NOTE: PULSE_FADE must be a pin that supports PWM. Do not use
+
+      pin 9 or 10, because those pins' PWM interferes with the sample timer.
+
+*/
+
+ 
+
+ 
+
+/*
+
+   All the PulseSensor Playground functions.
+
+*/
+
+ 
+
+ 
+
+void setup() {
+
+  /*
+
+     Use 115200 baud because that's what the Processing Sketch expects to read,
+
+     and because that speed provides about 11 bytes per millisecond.
+
+ 
+
+     If we used a slower baud rate, we'd likely write bytes faster than
+
+     they can be transmitted, which would mess up the timing
+
+     of readSensor() calls, which would make the pulse measurement
+
+     not work properly.
+
+  */
+
+  Serial.begin(115200);
+
+  SPI.begin();     
+
+  // Configure the PulseSensor manager.
+
+ 
+
+  pulseSensor.analogInput(PULSE_INPUT);
+
+  pulseSensor.blinkOnPulse(PULSE_BLINK);
+
+  pulseSensor.fadeOnPulse(PULSE_FADE);
+
+ 
+
+  pulseSensor.setSerial(Serial);
+
+  pulseSensor.setOutputType(OUTPUT_TYPE);
+
+  pulseSensor.setThreshold(THRESHOLD);
+
+ 
+
+  // Now that everything is ready, start reading the PulseSensor signal.
+
+  if (!pulseSensor.begin()) {
+
+    /*
+
+       PulseSensor initialization failed,
+
+       likely because our particular Arduino platform interrupts
+
+       aren't supported yet.
+
+ 
+
+       If your Sketch hangs here, try ProcessEverySample.ino,
+
+       which doesn't use interrupts.
+
+    */
+
+    for(;;) {
+
+      // Flash the led to show things didn't work.
+
+      digitalWrite(PULSE_BLINK, LOW);
+
+      delay(50);
+
+      digitalWrite(PULSE_BLINK, HIGH);
+
+      delay(50);
+
+    }
+
+  }
+
+ 
+
+  mfrc.PCD_Init();  
+
+  
+
+  lcd.init();                      
+
+  lcd.backlight();
+
+}
+
+ 
+
+void count() {                     //countdown
+
+   while(seconds > 0) {
+
+        seconds -= 1;
+
+        lcd.setCursor(0,0);
+
+        lcd.print("T :");
+
+        lcd.setCursor(3,0);  
+
+        lcd.print(seconds);
+
+        delay(1000);
+
+        lcd.clear();
+
+        
+
+        lcd.print("T:");
+
+        lcd.setCursor(8,0);
+
+        lcd.print("H:");
+
+        lcd.setCursor(0,1);
+
+        lcd.print("K:");
+
+        lcd.setCursor(8,1);
+
+        lcd.print("M:");
+
+      }
+
+}
+
+void nf(){                           //fitness char output
+
+  unsigned char i, j; 
+
+  for(int i = 0; i<n - 1; i++){
+
+    int j = random(1, n - i);
+
+ 
+
+    int t = EXERCISE_NUM[i];
+
+    EXERCISE_NUM[i] = EXERCISE_NUM[j];
+
+    EXERCISE_NUM[j] = t; 
+
+    
+
+  }
+
+ 
+
+    lcd.setCursor(10, 1);
+
+    for(int k = 0 ; k < 4 ; k++){
+
+      lcd.print(EXERCISE_NUM[k] );
+
+      lcd.setCursor(10+k, 1);
+
+      delay(100);
+
+  }
+
+}
+
+void loop() {
+
+/*
+
+  delay(20);
+
+ 
+
+  // write the latest sample to Serial.
+
+ pulseSensor.outputSample();
+
+ 
+
+ 
+
+  if (pulseSensor.sawStartOfBeat()) {
+
+   pulseSensor.outputBeat();
+
+  }
+
+  **********************************************************************************************
+
+  */
+
+  lcd.setCursor(0, 0);
+
+  pulseSensor.outputSample();
+
+  int seconds;
+
+  boolean b = true;
+
+  while(b){
+
+  if ( !mfrc.PICC_IsNewCardPresent() || !mfrc.PICC_ReadCardSerial() ) {   
+
+                                               // 태그 접촉이 되지 않았을때 또는 ID가 읽혀지지 않았을때
+
+    delay(500);                                // 0.5초 딜레이 
+
+    return;                                    // return
+
+  } 
+
+  int a;
+
+  a = mfrc.uid.uidByte[0];
+
+  
+
+  //lcd.print(EXERCISE_NUM[0]);
+
+ 
+
+    /*if( a>= 200) {
+
+      Serial.println("안녕하세요, 고객님");
+
+      Serial.println("당신의 등급은 파랑입니다.");
+
+      lcd.print("Running");
+
+      lcd.setCursor(0,0);
+
+      delay(10000);
+
+      }
+
+ 
+
+                      //stop watch code
+
+ 
+
+ 
+
+      
+
+      Serial.println("입니다.");
+
+      for(i=0;i<8;i++)
+
+      {
+
+        digitalWrite(buzzer, HIGH); //SOUND ON
+
+        delay(1);
+
+        digitalWrite(buzzer, LOW);  //SOUND OFF
+
+        delay(1);
+
+      }
+
+      */
+
+    /* else if(a<200 && a>=100){
+
+      Serial.println("안녕하세요, 고객님");
+
+      Serial.println("당신의 등급은 노랑입니다.");
+
+      lcd.print("Yellow Grade");
+
+ 
+
+  
+
+      Serial.println("오늘의 운동 순서는");
+
+      for(int i = 0; i<8; i++){
+
+        Serial.print(EXERCISE_NUM[i]);
+
+        Serial.print("번");
+
+        Serial.print("\ ");
+
+      }
+
+      Serial.println("입니다.");
+
+      Serial.println("7번째 운동부터는 안 하셔도 됩니다.");
+
+ 
+
+      for(i=0;i<8;i++)
+
+      {
+
+        digitalWrite(buzzer, HIGH); //SOUND ON
+
+        delay(100);
+
+        digitalWrite(buzzer, LOW);  //SOUND OFF
+
+        delay(100);
+
+      }
+
+      
+
+    }*/ if(a<200){
+
+      Serial.println("안녕하세요, 고객님");
+
+      Serial.println("당신의 등급은 하양입니다.");
+
+      lcd.print("Squart");
+
+      lcd.setCursor(0,0);
+
+      //delay(10000);
+
+      //lcd.noDisplay();
+
+      lcd.clear();
+
+      delay(500);
+
+      lcd.setCursor(0,0);
+
+      lcd.print("T:");
+
+      count();
+
+      lcd.setCursor(2,0);
+
+ 
+
+      
+
+      lcd.setCursor(8,0);
+
+      lcd.print("H:");
+
+      
+
+      lcd.setCursor(0,1);
+
+      lcd.print("K:");
+
+      lcd.setCursor(8,1);
+
+      lcd.print("M:");
+
+      nf();
+
+    }//end of if
+
+ 
+
+ 
+
+ 
+
+      
+
+      Serial.println("오늘의 운동 순서는");
+
+      /*
+
+      for(int i = 0; i < 4; i++){
+
+        Serial.print(EXERCISE_NUM[i]);
+
+        Serial.print("번");
+
+        Serial.print("\ ");
+
+           for(int i=0; i < 4 ;i++){
+
+            lcd.setCursor(8+i,1);
+
+            lcd.print(EXERCISE_NUM[i]);
+
+            lcd.print(" ");
+
+      }
+
+      
+
+  b = false;
+
+  */
+
+      Serial.println("입니다.");
+
+      Serial.println("5번째 운동부터는 안 하셔도 됩니다.");
+
+ 
+
+      /*for(i=0;i<8;i++)
+
+      {
+
+        digitalWrite(buzzer, HIGH); //SOUND ON
+
+        delay(3);
+
+        digitalWrite(buzzer, LOW);  //SOUND OFF
+
+        delay(3);
+
+      }
+
+      if( a>= 200) {
+
+        Serial.println("오늘의 운동 순서는");
+
+        for(int i = 0; i < 4; i++){
+
+          Serial.print(EXERCISE_NUM[i]);
+
+          Serial.print("번");
+
+          Serial.print("\ ");
+
+            for(int i=0; i < 4 ;i++){
+
+              lcd.setCursor(8+i,1);
+
+              lcd.print(EXERCISE_NUM[i]);
+
+              lcd.print(" ");
+
+            }
+
+        }
+
+      }
+
+    }*/
+
+  
+
+ 
+
+ 
+
+  
+
+  if (pulseSensor.sawStartOfBeat()) {
+
+   pulseSensor.outputBeat();
+
+  }//end of if
+
+  
+
+}
